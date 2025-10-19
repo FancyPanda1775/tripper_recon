@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "netintel"
+version = "0.1.0"
+description = "Unified async OSINT IP/Domain/ASN investigation tool"
+requires-python = ">=3.10"
+authors = [{ name = "Your Name" }]
+readme = "README.md"
+license = { text = "Proprietary" }
+dependencies = [
+  "httpx[http2]>=0.27.0",
+  "pydantic>=2.6.0",
+  "fastapi>=0.110.0",
+  "uvicorn>=0.29.0",
+  "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dns = ["aiodns>=3.2.0"]
+ssh = ["asyncssh>=2.13.2"]
+nmap = ["python-nmap>=0.7.1"]
+crypto = ["cryptography>=42.0.5"]
+
+[project.scripts]
+netintel = "netintel.cli:main"
+netintel-api = "netintel.api.server:run"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+include = ["netintel*"]
+exclude = ["tests*", "examples*", "docs*"]
