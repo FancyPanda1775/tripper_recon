@@ -1,29 +1,29 @@
-# Netintel
+# tripper-recon
 
-Unified, async OSINT toolkit for IP, domain, URL, and ASN investigations. It uses a functional design with RORO interfaces, typed models (Pydantic v2), structured JSON logs, and provider clients for Cloudflare Radar, VirusTotal, Shodan, AbuseIPDB, IPInfo, and OTX. It exposes both a CLI (see `netintel` in [`pyproject.toml`](./pyproject.toml)) and a REST API server (see `netintel-api`), with secure defaults, rate limiting, and jittered backoff.
+Unified, async OSINT toolkit for IP, domain, URL, and ASN investigations. It uses a functional design with RORO interfaces, typed models (Pydantic v2), structured JSON logs, and provider clients for Cloudflare Radar, VirusTotal, Shodan, AbuseIPDB, IPInfo, and OTX. It exposes both a CLI (see `tripper-recon` in [`pyproject.toml`](./pyproject.toml)) and a REST API server (see `tripper-recon-api`), with secure defaults, rate limiting, and jittered backoff.
 
-- CLI entrypoint: [`netintel/cli.py`](./netintel/cli.py)
-- API server: [`netintel/api/server.py`](./netintel/api/server.py)
-- Orchestrators: [`netintel/orchestrators.py`](./netintel/orchestrators.py)
+- CLI entrypoint: [`tripper_recon/cli.py`](./tripper_recon/cli.py)
+- API server: [`tripper_recon/api/server.py`](./tripper_recon/api/server.py)
+- Orchestrators: [`tripper_recon/orchestrators.py`](./tripper_recon/orchestrators.py)
 
 ## Usage
 
 ```
 # Help and version
-netintel --help
-netintel --version
+tripper-recon --help
+tripper-recon --version
 
 # IP investigation
-netintel ip 8.8.8.8
-netintel ip 8.8.8.8 --format json
+tripper-recon ip 8.8.8.8
+tripper-recon ip 8.8.8.8 --format json
 
 # Domain investigation
-netintel domain www.google.com
-netintel domain www.google.com --format json
+tripper-recon domain www.google.com
+tripper-recon domain www.google.com --format json
 
 # ASN lookup
-netintel asn 15169
-netintel asn 15169 --format json
+tripper-recon asn 15169
+tripper-recon asn 15169 --format json
 ```
 
 Flags
@@ -31,16 +31,36 @@ Flags
 - `-V, --version` - Print version and exit.
 - `-h, --help` - Show command help.
 
+### CLI Commands
+
+- `tripper-recon --help` — top-level usage and global flags.
+- `tripper-recon ip <ip>` — investigate an IP address.
+  - `--format console|json`
+  - `--ports-limit <N|all>`
+- `tripper-recon domain <domain>` — investigate a domain or URL.
+  - `--format console|json`
+  - `--ports-limit <N|all>`
+- `tripper-recon asn <asn>` — investigate an Autonomous System Number.
+  - `--format console|json`
+  - `--neighbors <N>`
+  - `--enrich`
+  - `--enrich-limit <N>`
+  - `--monochrome`
+  - `--prefixes-out <path>`
+  - `--prefixes v4|v6|both`
+- `tripper-recon-api` — launch the FastAPI server (see `tripper_recon/api/server.py`).
+- Python module alternative: `python -m tripper_recon.cli ...`
+
 ## Techniques
 
 - HTTP/2 with connection pooling using `httpx.AsyncClient` for lower latency and better multiplexing. See MDN on HTTP/2: https://developer.mozilla.org/docs/Web/HTTP/Overview#http2
 - Explicit HTTP headers for `User-Agent` and `Accept` to improve API compatibility. MDN docs: `User-Agent` https://developer.mozilla.org/docs/Web/HTTP/Headers/User-Agent and `Accept` https://developer.mozilla.org/docs/Web/HTTP/Headers/Accept
 - Jittered exponential backoff for transient errors and rate limits; aligns with `429 Too Many Requests` and `Retry-After` guidance. MDN: 429 https://developer.mozilla.org/docs/Web/HTTP/Status/429 and `Retry-After` https://developer.mozilla.org/docs/Web/HTTP/Headers/Retry-After
-- Structured JSON logging (flat key/value events) for SIEM ingestion and correlation, implemented in [`netintel/utils/logging.py`](./netintel/utils/logging.py).
-- Async DNS resolution and reverse PTR lookups offloaded to threads to avoid blocking the event loop; see [`netintel/utils/dns.py`](./netintel/utils/dns.py). MDN DNS basics: https://developer.mozilla.org/docs/Glossary/DNS
+- Structured JSON logging (flat key/value events) for SIEM ingestion and correlation, implemented in [`tripper_recon/utils/logging.py`](./tripper_recon/utils/logging.py).
+- Async DNS resolution and reverse PTR lookups offloaded to threads to avoid blocking the event loop; see [`tripper_recon/utils/dns.py`](./tripper_recon/utils/dns.py). MDN DNS basics: https://developer.mozilla.org/docs/Glossary/DNS
 - Dependency injection of a shared `httpx` client and env-driven API keys to keep functions pure and testable; RORO (Receive an Object, Return an Object) throughout the toolchain.
 - Guard clauses and early returns to handle invalid inputs fast (e.g., malformed IPs/domains/ASNs) and keep the happy path last.
-- Provider composition: results are normalized and merged by orchestrators to render consolidated reports; console formatting aligns with your example outputs in [`netintel/reporting/console.py`](./netintel/reporting/console.py).
+- Provider composition: results are normalized and merged by orchestrators to render consolidated reports; console formatting aligns with your example outputs in [`tripper_recon/reporting/console.py`](./tripper_recon/reporting/console.py).
 
 ## Notable Libraries
 
@@ -49,7 +69,6 @@ Flags
 - Pydantic v2 (data validation): https://docs.pydantic.dev
 - Uvicorn (ASGI server): https://www.uvicorn.org
 - python-dotenv (load `.env`): https://saurabh-kumar.com/python-dotenv
-- Sublist3r (subdomain enumeration): https://github.com/aboul3la/Sublist3r
 - iplyzer (IP enrichment tool): https://github.com/mxm0z/iplyzer
 
 Provider APIs
@@ -65,54 +84,50 @@ Fonts
 
 ## Project Structure
 
-```
+`
 .
 ├─ README.md
 ├─ pyproject.toml
 ├─ .gitignore
 ├─ .env.example
 ├─ .env
-└─ netintel/
+└─ tripper_recon/
    ├─ api/
    ├─ enumerators/
    ├─ providers/
    ├─ reporting/
    ├─ types/
    └─ utils/
-```
-
-- netintel/api: FastAPI app and launch function; see [`netintel/api/server.py`](./netintel/api/server.py).
-- netintel/enumerators: Subdomain enumeration (Sublist3r wrapper).
-- netintel/providers: Cloudflare Radar, VirusTotal, Shodan, AbuseIPDB, IPInfo, OTX, and iplyzer wrappers.
-- netintel/reporting: Console renderers that match your target formats.
-- netintel/types: Pydantic models for input/output and settings.
-- netintel/utils: HTTP client factory, rate limiter, backoff, DNS helpers, `.env` loader, validation, and JSON logger.
-
+`
 ## File Highlights
 
-- CLI: [`netintel/cli.py`](./netintel/cli.py) - Commands for IP, domain, and ASN. Auto-loads `.env`.
-- API Server: [`netintel/api/server.py`](./netintel/api/server.py) - Endpoints: `/ip/{ip}`, `/domain/{domain}`, `/asn/{asn}`.
-- Orchestrators: [`netintel/orchestrators.py`](./netintel/orchestrators.py) - Async flows that combine providers per target type.
+- CLI: [`tripper_recon/cli.py`](./tripper_recon/cli.py) - Commands for IP, domain, and ASN. Auto-loads `.env`.
+- API Server: [`tripper_recon/api/server.py`](./tripper_recon/api/server.py) - Endpoints: `/ip/{ip}`, `/domain/{domain}`, `/asn/{asn}`.
+- Orchestrators: [`tripper_recon/orchestrators.py`](./tripper_recon/orchestrators.py) - Async flows that combine providers per target type.
 - Providers:
-  - Cloudflare Radar GraphQL: [`netintel/providers/cloudflare_radar.py`](./netintel/providers/cloudflare_radar.py)
-  - VirusTotal: [`netintel/providers/virustotal.py`](./netintel/providers/virustotal.py)
-  - Shodan: [`netintel/providers/shodan_api.py`](./netintel/providers/shodan_api.py)
-  - AbuseIPDB: [`netintel/providers/abuseipdb.py`](./netintel/providers/abuseipdb.py)
-  - IPInfo: [`netintel/providers/ipinfo.py`](./netintel/providers/ipinfo.py)
-  - AlienVault OTX: [`netintel/providers/otx.py`](./netintel/providers/otx.py)
-  - iplyzer wrapper: [`netintel/providers/iplyzer_wrapper.py`](./netintel/providers/iplyzer_wrapper.py)
-- Reporting: [`netintel/reporting/console.py`](./netintel/reporting/console.py) - Renders summaries aligned to your example outputs.
+  - Cloudflare Radar GraphQL: [`tripper_recon/providers/cloudflare_radar.py`](./tripper_recon/providers/cloudflare_radar.py)
+  - VirusTotal: [`tripper_recon/providers/virustotal.py`](./tripper_recon/providers/virustotal.py)
+  - Shodan: [`tripper_recon/providers/shodan_api.py`](./tripper_recon/providers/shodan_api.py)
+  - AbuseIPDB: [`tripper_recon/providers/abuseipdb.py`](./tripper_recon/providers/abuseipdb.py)
+  - IPInfo: [`tripper_recon/providers/ipinfo.py`](./tripper_recon/providers/ipinfo.py)
+  - AlienVault OTX: [`tripper_recon/providers/otx.py`](./tripper_recon/providers/otx.py)
+  - iplyzer wrapper: [`tripper_recon/providers/iplyzer_wrapper.py`](./tripper_recon/providers/iplyzer_wrapper.py)
+- Reporting: [`tripper_recon/reporting/console.py`](./tripper_recon/reporting/console.py) - Renders summaries aligned to your example outputs.
 - Utilities:
-  - JSON logging: [`netintel/utils/logging.py`](./netintel/utils/logging.py)
-  - HTTP client + rate limiting: [`netintel/utils/http.py`](./netintel/utils/http.py)
-  - Backoff: [`netintel/utils/backoff.py`](./netintel/utils/backoff.py)
-  - DNS helpers: [`netintel/utils/dns.py`](./netintel/utils/dns.py)
-  - Validation: [`netintel/utils/validation.py`](./netintel/utils/validation.py)
-  - Env loader: [`netintel/utils/env.py`](./netintel/utils/env.py)
+  - JSON logging: [`tripper_recon/utils/logging.py`](./tripper_recon/utils/logging.py)
+  - HTTP client + rate limiting: [`tripper_recon/utils/http.py`](./tripper_recon/utils/http.py)
+  - Backoff: [`tripper_recon/utils/backoff.py`](./tripper_recon/utils/backoff.py)
+  - DNS helpers: [`tripper_recon/utils/dns.py`](./tripper_recon/utils/dns.py)
+  - Validation: [`tripper_recon/utils/validation.py`](./tripper_recon/utils/validation.py)
+  - Env loader: [`tripper_recon/utils/env.py`](./tripper_recon/utils/env.py)
 
 ## Configuration
 
-- The CLI and API auto-load a `.env` file when present; see [`netintel/utils/env.py`](./netintel/utils/env.py).
+- The CLI and API auto-load a `.env` file when present; see [`tripper_recon/utils/env.py`](./tripper_recon/utils/env.py).
 - Example configuration: [`.env.example`](./.env.example)
 - Supported keys: `CLOUDFLARE_API_TOKEN`, `VT_API_KEY`, `SHODAN_API_KEY`, `ABUSEIPDB_API_KEY`, `IPINFO_TOKEN`, `OTX_API_KEY`, `NETINTEL_LOG_LEVEL`, `NETINTEL_UA`.
+
+
+
+
 
