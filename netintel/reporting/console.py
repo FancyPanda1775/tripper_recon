@@ -26,6 +26,7 @@ def render_ip_analysis(ip: str, data: Dict[str, Any], *, ports_limit: str = "25"
     abuse = data.get("abuseipdb", {})
     ipinfo = data.get("ipinfo", {})
     asn_meta = data.get("asn_meta", {})
+    otx = data.get("otx", {})
 
     lines: List[str] = []
     lines.append("Parsed Results for IP Analysis:")
@@ -62,6 +63,19 @@ def render_ip_analysis(ip: str, data: Dict[str, Any], *, ports_limit: str = "25"
         lines.append(f"virustotal_community_score: {vt_reputation}")
     if vt_link:
         lines.append(f"virustotal_analysis_link: {vt_link}")
+    # AlienVault OTX pulse summary, if available
+    if otx:
+        try:
+            pulse_count = int(otx.get("otx_pulse_count", 0) or 0)
+        except Exception:
+            pulse_count = 0
+        lines.append(f"otx_pulse_count: {pulse_count}")
+        titles = otx.get("otx_pulse_titles") or []
+        if isinstance(titles, list) and titles:
+            # Join up to 5 titles with '; ' for brevity
+            joined = "; ".join(str(t) for t in titles[:5] if t)
+            if joined:
+                lines.append(f"otx_pulse_titles: {joined}")
     if abuse:
         lines.append(f"abuseipdb_reports: {abuse.get('abuseipdb_reports', 0)}")
         conf_val = abuse.get('abuseipdb_confidence_score', 0)

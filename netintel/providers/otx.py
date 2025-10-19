@@ -11,12 +11,13 @@ OTX_BASE = "https://otx.alienvault.com/api/v1"
 
 
 async def otx_ip_pulses(*, client: httpx.AsyncClient, api_key: Optional[str], ip: str) -> Dict[str, Any]:
-    headers = {"Accept": "application/json"}
-    if api_key:
-        headers["X-OTX-API-KEY"] = api_key
+    if not api_key:
+        return {"ok": False, "error": "API key not configured"}
+
+    headers = {"Accept": "application/json", "X-OTX-API-KEY": api_key}
 
     async def _call() -> Dict[str, Any]:
-        r = await client.get(f"{OTX_BASE}/indicators/IPv4/{ip}/general", headers=headers)
+        r = await client.get(f"{OTX_BASE}/indicators/IPv4/{ip}/general", headers=headers, timeout=20.0)
         if r.status_code == 404:
             return {"ok": False, "error": "not_found"}
         r.raise_for_status()

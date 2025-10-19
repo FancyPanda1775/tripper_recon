@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import Any, Dict, List
+from ipaddress import ip_address
 
 from netintel.providers.abuseipdb import abuseipdb_check
 from netintel.providers.cloudflare_radar import fetch_asn_metadata
@@ -40,6 +41,14 @@ async def investigate_ip(ip: str) -> InvestigationResult:
     if not is_valid_ip(ip):
         return InvestigationResult(ok=False, errors=["Invalid IP address"], data={})
 
+    try:
+        ip_obj = ip_address(ip)
+        if ip_obj.is_private:
+            return InvestigationResult(ok=False, errors=[f"Private IP address {ip} cannot be investigated."], data={})
+    except ValueError:
+        # This should be caught by is_valid_ip, but as a fallback.
+        return InvestigationResult(ok=False, errors=[f"Invalid IP address format: {ip}"], data={})
+
     keys = _env_keys()
     async with create_client() as client:
         limiter = RateLimiter(rate=5)
@@ -56,11 +65,27 @@ async def investigate_ip(ip: str) -> InvestigationResult:
         async with limiter:
             otx_task = asyncio.create_task(otx_ip_pulses(client=client, api_key=keys.otx_api_key, ip=ip))
 
-        vt = await vt_task
-        ipi = await ipi_task
-        sh = await sh_task
-        ab = await ab_task
-        otx = await otx_task
+        # Ensure provider failures don't crash the whole investigation
+        try:
+            vt = await vt_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            vt = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            ipi = await ipi_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            ipi = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            sh = await sh_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            sh = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            ab = await ab_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            ab = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            otx = await otx_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            otx = {"ok": False, "error": type(e).__name__, "message": str(e)}
 
         asn_meta: Dict[str, Any] = {}
         if ipi.get("ok") and ipi["data"].get("asn"):
@@ -91,10 +116,22 @@ async def investigate_domain(domain: str) -> InvestigationResult:
     async with create_client() as client:
         for ip in ips:
             ptr = await reverse_ptr(ip)
-            vt = await vt_ip_summary(client=client, api_key=keys.vt_api_key, ip=ip)
-            sh = await shodan_host(client=client, api_key=keys.shodan_api_key, ip=ip)
-            ipi = await ipinfo_ip(client=client, token=keys.ipinfo_token, ip=ip)
-            ab = await abuseipdb_check(client=client, api_key=keys.abuseipdb_api_key, ip=ip)
+            try:
+                vt = await vt_ip_summary(client=client, api_key=keys.vt_api_key, ip=ip)
+            except Exception as e:  # noqa: BLE001
+                vt = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            try:
+                sh = await shodan_host(client=client, api_key=keys.shodan_api_key, ip=ip)
+            except Exception as e:  # noqa: BLE001
+                sh = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            try:
+                ipi = await ipinfo_ip(client=client, token=keys.ipinfo_token, ip=ip)
+            except Exception as e:  # noqa: BLE001
+                ipi = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            try:
+                ab = await abuseipdb_check(client=client, api_key=keys.abuseipdb_api_key, ip=ip)
+            except Exception as e:  # noqa: BLE001
+                ab = {"ok": False, "error": type(e).__name__, "message": str(e)}
 
             asn_meta: Dict[str, Any] = {}
             if ipi.get("ok") and ipi["data"].get("asn"):
@@ -147,20 +184,57 @@ async def investigate_asn(asn: int | str, *, resolve_neighbors: int = 0, enrich:
         if keys.cloudflare_api_token:
             cf_task = asyncio.create_task(fetch_asn_metadata(client=client, api_token=keys.cloudflare_api_token, asn=asn_int))
 
-        ipi = await ipi_task
-        bgp = await bgp_task
-        ripe = await ripe_overview_task
-        rp_abuse = await ripe_abuse_task
-        caida = await caida_task
-        pdb = await pdb_task
-        cf_bgp = await cf_bgp_task
+        try:
+            ipi = await ipi_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            ipi = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            bgp = await bgp_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            bgp = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            ripe = await ripe_overview_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            ripe = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            rp_abuse = await ripe_abuse_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            rp_abuse = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            caida = await caida_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            caida = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            pdb = await pdb_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            pdb = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            cf_bgp = await cf_bgp_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            cf_bgp = {"ok": False, "error": type(e).__name__, "message": str(e)}
+
         rs_task = asyncio.create_task(routing_status(client=client, asn=asn_int))
         nb_task = asyncio.create_task(asn_neighbours(client=client, asn=asn_int))
         ap_task = asyncio.create_task(announced_prefixes(client=client, asn=asn_int))
-        rs = await rs_task
-        nb = await nb_task
-        ap = await ap_task
-        cf = await cf_task if cf_task else {"ok": False}
+        try:
+            rs = await rs_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            rs = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            nb = await nb_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            nb = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        try:
+            ap = await ap_task  # type: ignore[assignment]
+        except Exception as e:  # noqa: BLE001
+            ap = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        if cf_task:
+            try:
+                cf = await cf_task  # type: ignore[assignment]
+            except Exception as e:  # noqa: BLE001
+                cf = {"ok": False, "error": type(e).__name__, "message": str(e)}
+        else:
+            cf = {"ok": False}
 
         meta: Dict[str, Any] = {}
         # Prefer Cloudflare values when present; fall back to IPinfo
