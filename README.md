@@ -69,7 +69,6 @@ Flags
 - Pydantic v2 (data validation): https://docs.pydantic.dev
 - Uvicorn (ASGI server): https://www.uvicorn.org
 - python-dotenv (load `.env`): https://saurabh-kumar.com/python-dotenv
-- iplyzer (IP enrichment tool): https://github.com/mxm0z/iplyzer
 
 Provider APIs
 - Cloudflare Radar (GraphQL used for ASN metadata): https://developers.cloudflare.com/api
@@ -86,18 +85,17 @@ Fonts
 
 `
 .
-├─ README.md
-├─ pyproject.toml
-├─ .gitignore
-├─ .env.example
-├─ .env
-└─ tripper_recon/
-   ├─ api/
-   ├─ enumerators/
-   ├─ providers/
-   ├─ reporting/
-   ├─ types/
-   └─ utils/
+- README.md
+- pyproject.toml
+- .gitignore
+- .env.example
+- .env
+- tripper_recon/
+  - api/
+  - providers/
+  - reporting/
+  - types/
+  - utils/
 `
 ## File Highlights
 
@@ -111,7 +109,6 @@ Fonts
   - AbuseIPDB: [`tripper_recon/providers/abuseipdb.py`](./tripper_recon/providers/abuseipdb.py)
   - IPInfo: [`tripper_recon/providers/ipinfo.py`](./tripper_recon/providers/ipinfo.py)
   - AlienVault OTX: [`tripper_recon/providers/otx.py`](./tripper_recon/providers/otx.py)
-  - iplyzer wrapper: [`tripper_recon/providers/iplyzer_wrapper.py`](./tripper_recon/providers/iplyzer_wrapper.py)
 - Reporting: [`tripper_recon/reporting/console.py`](./tripper_recon/reporting/console.py) - Renders summaries aligned to your example outputs.
 - Utilities:
   - JSON logging: [`tripper_recon/utils/logging.py`](./tripper_recon/utils/logging.py)
