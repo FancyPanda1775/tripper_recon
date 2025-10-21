@@ -7,9 +7,25 @@ from typing import Any, Dict
 import httpx
 
 
+_DEFAULT_BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0"
+)
+
+
+def _user_agent() -> str:
+    value = os.getenv("TRIPPER_RECON_USER_AGENT")
+    if value:
+        ua = value.strip()
+        if ua:
+            return ua
+    return _DEFAULT_BROWSER_UA
+
+
 def default_headers() -> Dict[str, str]:
     return {
-        "User-Agent": os.getenv("NETINTEL_UA", "tripper-recon/0.1 (+https://example.invalid)"),
+        "User-Agent": _user_agent(),
         "Accept": "application/json",
     }
 

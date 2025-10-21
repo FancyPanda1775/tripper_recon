@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
-from typing import Any
+from typing import Any, Dict, List
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -21,6 +21,116 @@ def _print(s: str) -> None:
     os.sys.stdout.write(s)
 
 
+def _fmt_provider_error(detail: Any) -> str:
+    if isinstance(detail, dict):
+        parts: list[str] = []
+        status = detail.get("status_code")
+        if status is None:
+            status = detail.get("status")
+        if status is not None:
+            parts.append(f"status={status}")
+        reason = detail.get("reason")
+        if reason:
+            parts.append(f"reason={reason}")
+        message = detail.get("message")
+        if message:
+            parts.append(f"message={message}")
+        url = detail.get("url")
+        if url:
+            parts.append(f"url={url}")
+        body = detail.get("body")
+        if body:
+            parts.append(f"body={body}")
+        return " | ".join(parts) if parts else "error"
+    return str(detail)
+
+
+def _fmt_dn(value: Any) -> str:
+    if isinstance(value, dict):
+        parts: List[str] = []
+        for k, v in value.items():
+            if isinstance(v, list):
+                joined = ", ".join(str(item) for item in v)
+                parts.append(f"{k}={joined}")
+            else:
+                parts.append(f"{k}={v}")
+        return ", ".join(parts)
+    return str(value)
+
+
+def _print_whois_block(whois: Any) -> None:
+    if not whois:
+        return
+    entries: List[tuple[str, str]] = []
+    for raw_line in str(whois).splitlines():
+        line = raw_line.strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        entries.append((key.strip(), value.strip()))
+    if not entries:
+        return
+
+    priority = [
+        "Domain Name",
+        "Registry Domain ID",
+        "Registrar",
+        "Registrar IANA ID",
+        "Registrar URL",
+        "Registrar WHOIS Server",
+        "Registrar Abuse Contact Email",
+        "Registrar Abuse Contact Phone",
+        "Updated Date",
+        "Creation Date",
+        "Registry Expiry Date",
+        "Domain Status",
+        "Name Server",
+        "DNSSEC",
+    ]
+
+    _print("Whois Lookup\n")
+    for key in priority:
+        target = key.lower()
+        for k, v in entries:
+            if k.lower() == target:
+                _print(f"{k}: {v}\n")
+    _print("\n")
+
+
+def _print_certificate_block(cert: Dict[str, Any], jarm: Any) -> None:
+    if not cert:
+        return
+    _print("Last HTTPS Certificate\n")
+    if jarm:
+        _print(f"JARM fingerprint: {jarm}\n")
+    version = cert.get("version")
+    if version is not None:
+        _print(f"Version: {version}\n")
+    serial = cert.get("serial_number")
+    if serial:
+        _print(f"Serial Number: {serial}\n")
+    thumbprint = cert.get("thumbprint_sha256")
+    if thumbprint:
+        _print(f"Thumbprint: {thumbprint}\n")
+    sig_alg = cert.get("signature_algorithm")
+    if sig_alg:
+        _print(f"Signature Algorithm: {sig_alg}\n")
+    issuer = cert.get("issuer")
+    if issuer:
+        _print(f"Issuer: {_fmt_dn(issuer)}\n")
+    validity = cert.get("validity") or {}
+    not_before = validity.get("not_before")
+    if not_before:
+        _print(f"Not Before: {not_before}\n")
+    not_after = validity.get("not_after")
+    if not_after:
+        _print(f"Not After: {not_after}\n")
+    subject = cert.get("subject")
+    if subject:
+        _print(f"Subject: {_fmt_dn(subject)}\n")
+    _print("\n")
+
+
 async def _cmd_ip(ip: str, *, output: str = "console", ports_limit: str = "25") -> int:
     res = await investigate_ip(ip)
     if not res.ok:
@@ -29,7 +139,15 @@ async def _cmd_ip(ip: str, *, output: str = "console", ports_limit: str = "25") 
     if output == "json":
         _print(res.model_dump_json(indent=2) + "\n")
     else:
-        _print(render_ip_analysis(ip, res.data, ports_limit=ports_limit))
+        line = f"| IP lookup for {ip} |"
+        top = "+" + ("-" * (len(line) - 2)) + "+"
+        bottom = "+" + ("-" * (len(line) - 2)) + "+"
+        _print(top + "\n" + line + "\n" + bottom + "\n\n")
+        _print("ip_intelligence:\n")
+        block = render_ip_analysis(ip, res.data, ports_limit=ports_limit).strip().splitlines()
+        for entry in block:
+            _print(f"  {entry}\n")
+        _print("\n")
     return 0
 
 
@@ -47,7 +165,10 @@ async def _cmd_domain(domain: str, *, output: str = "console", ports_limit: str 
         _print(res.model_dump_json(indent=2) + "\n")
         return 0
 
-    ips = res.data.get("ips", [])
+    data = res.data
+    domain_intel = data.get("domain_intel", {})
+    domain_errors = data.get("domain_errors", {})
+    ips = data.get("ips", [])
 
 # Dynamic boxed header (ASCII to avoid encoding issues)
     line = f"| Domain lookup for {norm_domain} |"
@@ -55,77 +176,82 @@ async def _cmd_domain(domain: str, *, output: str = "console", ports_limit: str 
     bottom = "+" + ("-" * (len(line) - 2)) + "+"
     _print(top + "\n" + line + "\n" + bottom + "\n\n")
 
+    radar_domain_link = f"https://radar.cloudflare.com/domain/{norm_domain}"
+    _print("domain_intelligence:\n")
+    _print(f"  cloudflare_radar_link: {radar_domain_link}\n")
+    vt_dom = domain_intel.get("virustotal", {}) if isinstance(domain_intel, dict) else {}
+    if vt_dom:
+        vt_stats = vt_dom.get("vt_last_analysis_stats", {}) or {}
+        vt_total = 0
+        if isinstance(vt_stats, dict):
+            for v in vt_stats.values():
+                try:
+                    vt_total += int(v or 0)
+                except Exception:
+                    continue
+        try:
+            vt_mal = int(vt_stats.get("malicious", 0) or 0)
+        except Exception:
+            vt_mal = 0
+        _print(f"  virustotal_detections: {vt_mal}/{vt_total}\n")
+        vt_reputation = vt_dom.get("vt_reputation")
+        if vt_reputation is not None:
+            _print(f"  virustotal_community_score: {vt_reputation}\n")
+        categories = vt_dom.get("vt_categories") or {}
+        if isinstance(categories, dict) and categories:
+            cats = ", ".join(sorted({str(val) for val in categories.values() if val}))
+            if cats:
+                _print(f"  virustotal_categories: {cats}\n")
+        dns_records = vt_dom.get("vt_dns_records") or []
+        passive_ips = []
+        if isinstance(dns_records, list):
+            for rec in dns_records:
+                if isinstance(rec, dict) and rec.get("type") in {"A", "AAAA"} and rec.get("value"):
+                    passive_ips.append(str(rec.get("value")))
+        if passive_ips:
+            preview = ", ".join(passive_ips[:5])
+            suffix = "" if len(passive_ips) <= 5 else f" ... (+{len(passive_ips) - 5} more)"
+            _print(f"  virustotal_passive_ips: {preview}{suffix}\n")
+    vt_link_domain = (vt_dom.get("vt_link") if isinstance(vt_dom, dict) else None) or f"https://www.virustotal.com/gui/domain/{norm_domain}"
+    _print(f"  virustotal_analysis_link: {vt_link_domain}\n")
+    _print(f"  abuseipdb_analysis_link: https://www.abuseipdb.com/check/{norm_domain}\n")
+
+    otx_dom = domain_intel.get("otx", {}) if isinstance(domain_intel, dict) else {}
+    otx_link_domain = f"https://otx.alienvault.com/indicator/domain/{norm_domain}"
+    if otx_dom:
+        pulse_count = otx_dom.get("otx_pulse_count")
+        if pulse_count is not None:
+            _print(f"  otx_pulse_count: {pulse_count}\n")
+        _print(f"  otx_pulse_link: {otx_link_domain}\n")
+        titles = otx_dom.get("otx_pulse_titles") or []
+        if isinstance(titles, list) and titles:
+            _print(f"  otx_pulse_titles: {'; '.join(str(t) for t in titles)}\n")
+    else:
+        _print(f"  otx_pulse_link: {otx_link_domain}\n")
+    _print("\n")
+
+    if vt_dom:
+        _print_whois_block(vt_dom.get("vt_whois"))
+        cert_info = vt_dom.get("vt_last_https_certificate") or {}
+        jarm_value = vt_dom.get("vt_last_https_certificate_jarm")
+        _print_certificate_block(cert_info, jarm_value)
+
+    if domain_errors:
+        _print("domain_provider_errors:\n")
+        for name, detail in domain_errors.items():
+            _print(f"  - {name}: {_fmt_provider_error(detail)}\n")
+        _print("\n")
+
     _print(f'- Resolving "{norm_domain}"... {len(ips)} IP addresses found:\n\n\n')
 
+    if not ips:
+        _print("No IPs available for IP-level enrichment.\n")
+        return 0
+
     for item in ips:
-        ip = item.get("ip")
-        if ip:
-            _print(f"ip: {ip}\n")
-
-        ipinfo = item.get("ipinfo", {})
-        city = ipinfo.get("city")
-        if city:
-            _print(f"city: {city}\n")
-        
-        country = ipinfo.get("country")
-        if country:
-            _print(f"country: {country}\n")
-
-        asn_meta = item.get("asn_meta", {})
-        asn = asn_meta.get("asn")
-        name = asn_meta.get("name")
-        if asn and name:
-            _print(f"isp: AS{asn} {name}\n")
-            _print(f"organization: AS{asn} {name}\n")
-
-        coords = ipinfo.get("loc")
-        if coords:
-            _print(f"coordinates: {coords}\n")
-
-        postal = ipinfo.get("postal")
-        if postal:
-            _print(f"postal_code: {postal}\n")
-
-        vt_obj = item.get("virustotal", {})
-        vt_stats = vt_obj.get("vt_last_analysis_stats", {})
-        vt_mal = vt_stats.get("malicious", 0)
-        vt_total = sum(vt_stats.values())
-        _print(f"virustotal_detections: {vt_mal}/{vt_total}\n")
-
-        vt_community_score = vt_obj.get("reputation", 0)
-        _print(f"virustotal_community_score: {vt_community_score}\n")
-        
-        vt_link = vt_obj.get("vt_link")
-        if vt_link:
-            _print(f"virustotal_analysis_link: {vt_link}\n")
-
-        abuse = item.get("abuseipdb", {})
-        if abuse:
-            reports = abuse.get("abuseipdb_reports", 0)
-            confidence = abuse.get("abuseipdb_confidence_score", 0)
-            _print(f"abuseipdb_reports: {reports}\n")
-            _print(f"abuseipdb_confidence_score: {confidence}%\n")
-
-        sh = item.get("shodan", {})
-        open_ports = sh.get("ports", [])
-        if open_ports:
-            ports_sorted = sorted(open_ports)
-            
-            if str(ports_limit).lower() == 'all':
-                max_show = len(ports_sorted)
-            else:
-                try:
-                    limit = int(ports_limit)
-                    max_show = limit if limit > 0 else 25
-                except (ValueError, TypeError):
-                    max_show = 25
-
-            shown = ports_sorted[:max_show]
-            more = len(ports_sorted) - len(shown)
-            ports_str = ", ".join(str(p) for p in shown)
-            if more > 0:
-                ports_str += f" ... and {more} more"
-            _print(f"open_ports: {ports_str}\n")
+        item_ip = item.get("ip", "")
+        block = render_ip_analysis(item_ip, item, ports_limit=ports_limit).strip()
+        _print(block + "\n\n")
 
     return 0
 
@@ -193,6 +319,11 @@ async def _cmd_asn(
             # Ensure a blank line before the BGP informations heading
             _print("\n")
             _print(render_asn_bgp_panels(asn, meta, bgp, use_color=(not monochrome)))
+        errors = res.data.get("errors") or {}
+        if errors:
+            _print("provider_errors:\n")
+            for name, detail in errors.items():
+                _print(f"  - {name}: {_fmt_provider_error(detail)}\n")
         # Optional: write full prefix lists to a text file
         if prefixes_out:
             v4_full = (res.data.get("bgp", {}) or {}).get("ripe_prefixes_v4") or []

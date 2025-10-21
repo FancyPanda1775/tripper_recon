@@ -29,28 +29,31 @@ def render_ip_analysis(ip: str, data: Dict[str, Any], *, ports_limit: str = "25"
     otx = data.get("otx", {})
 
     lines: List[str] = []
-    lines.append("Parsed Results for IP Analysis:")
     lines.append(f"ip: {ip}")
-    if ipinfo.get("city"):
-        lines.append(f"city: {ipinfo.get('city')}")
-    if ipinfo.get("country"):
-        lines.append(f"country: {ipinfo.get('country')}")
-    if ipinfo.get("org"):
-        lines.append(f"isp: {ipinfo.get('org')}")
-    if asn_meta.get("asn"):
-        lines.append(f"asn: {asn_meta.get('asn')}")
+    city = ipinfo.get("city")
+    if city:
+        lines.append(f"city: {city}")
+    country = ipinfo.get("country")
+    if country:
+        lines.append(f"country: {country}")
+    isp_line = None
+    asn_id = asn_meta.get("asn")
+    asn_name = asn_meta.get("name")
+    if asn_id and asn_name:
+        isp_line = f"AS{asn_id} {asn_name}"
+    elif ipinfo.get("org"):
+        isp_line = ipinfo.get("org")
+    if isp_line:
+        lines.append(f"isp: {isp_line}")
     org = asn_meta.get("organization") or ipinfo.get("org")
     if org:
         lines.append(f"organization: {org}")
     coords = _fmt_coords(ipinfo.get("coordinates"))
     if coords:
         lines.append(f"coordinates: {coords}")
-    if data.get("user_type"):
-        lines.append(f"user_type: {data.get('user_type')}")
-    if data.get("connection_type"):
-        lines.append(f"connection_type: {data.get('connection_type')}")
     if ipinfo.get("postal"):
         lines.append(f"postal_code: {ipinfo.get('postal')}")
+    lines.append(f"cloudflare_radar_link: https://radar.cloudflare.com/ip/{ip}")
     malicious = int(vt_stats.get("malicious", 0) or 0)
     total_engines = 0
     if isinstance(vt_stats, dict):
@@ -63,19 +66,6 @@ def render_ip_analysis(ip: str, data: Dict[str, Any], *, ports_limit: str = "25"
         lines.append(f"virustotal_community_score: {vt_reputation}")
     if vt_link:
         lines.append(f"virustotal_analysis_link: {vt_link}")
-    # AlienVault OTX pulse summary, if available
-    if otx:
-        try:
-            pulse_count = int(otx.get("otx_pulse_count", 0) or 0)
-        except Exception:
-            pulse_count = 0
-        lines.append(f"otx_pulse_count: {pulse_count}")
-        titles = otx.get("otx_pulse_titles") or []
-        if isinstance(titles, list) and titles:
-            # Join up to 5 titles with '; ' for brevity
-            joined = "; ".join(str(t) for t in titles[:5] if t)
-            if joined:
-                lines.append(f"otx_pulse_titles: {joined}")
     if abuse:
         lines.append(f"abuseipdb_reports: {abuse.get('abuseipdb_reports', 0)}")
         conf_val = abuse.get('abuseipdb_confidence_score', 0)
@@ -85,6 +75,23 @@ def render_ip_analysis(ip: str, data: Dict[str, Any], *, ports_limit: str = "25"
             conf_int = 0
         conf_int = max(0, min(100, conf_int))
         lines.append(f"abuseipdb_confidence_score: {conf_int}%")
+    lines.append(f"abuseipdb_analysis_link: https://www.abuseipdb.com/check/{ip}")
+    # AlienVault OTX pulse summary, if available
+    if otx:
+        try:
+            pulse_count = int(otx.get("otx_pulse_count", 0) or 0)
+        except Exception:
+            pulse_count = 0
+        lines.append(f"otx_pulse_count: {pulse_count}")
+        lines.append(f"otx_pulse_link: https://otx.alienvault.com/indicator/ip/{ip}")
+        titles = otx.get("otx_pulse_titles") or []
+        if isinstance(titles, list) and titles:
+            # Join up to 5 titles with '; ' for brevity
+            joined = "; ".join(str(t) for t in titles[:5] if t)
+            if joined:
+                lines.append(f"otx_pulse_titles: {joined}")
+    else:
+        lines.append(f"otx_pulse_link: https://otx.alienvault.com/indicator/ip/{ip}")
     if ports:
         ports_sorted = sorted({int(p) for p in ports if isinstance(p, int) or str(p).isdigit()})
         
@@ -103,6 +110,34 @@ def render_ip_analysis(ip: str, data: Dict[str, Any], *, ports_limit: str = "25"
         if more > 0:
             ports_str += f" ... and {more} more"
         lines.append(f"open_ports: {ports_str}")
+    lines.append(f"shodan_link: https://www.shodan.io/host/{ip}")
+    errors = data.get("errors") or {}
+    if errors:
+        lines.append("provider_errors:")
+        for name, detail in errors.items():
+            if not isinstance(detail, dict):
+                lines.append(f"  - {name}: {detail}")
+                continue
+            parts: List[str] = []
+            status = detail.get("status_code")
+            if status is None:
+                status = detail.get("status")
+            if status is not None:
+                parts.append(f"status={status}")
+            reason = detail.get("reason")
+            if reason:
+                parts.append(f"reason={reason}")
+            message = detail.get("message")
+            if message:
+                parts.append(f"message={message}")
+            url = detail.get("url")
+            if url:
+                parts.append(f"url={url}")
+            body = detail.get("body")
+            if body:
+                parts.append(f"body={body}")
+            joined = " | ".join(parts) if parts else "error"
+            lines.append(f"  - {name}: {joined}")
     return "\n".join(lines) + "\n"
 
 

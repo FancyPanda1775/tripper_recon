@@ -5,14 +5,15 @@ import os
 from typing import Any, Dict, List
 from ipaddress import ip_address
 
+import httpx
+
 from tripper_recon.providers.abuseipdb import abuseipdb_check
 from tripper_recon.providers.cloudflare_radar import fetch_asn_metadata
 from tripper_recon.providers.ipinfo import ipinfo_ip, ipinfo_asn
-from tripper_recon.providers.otx import otx_ip_pulses
+from tripper_recon.providers.otx import otx_domain_pulses, otx_ip_pulses
 from tripper_recon.providers.shodan_api import shodan_host
-from tripper_recon.providers.virustotal import vt_ip_summary
+from tripper_recon.providers.virustotal import vt_domain_summary, vt_ip_summary
 from tripper_recon.types.models import ApiKeys, InvestigationResult
-from tripper_recon.utils.dns import resolve_domain, reverse_ptr
 from tripper_recon.utils.http import RateLimiter, create_client
 from tripper_recon.utils.logging import logger
 from tripper_recon.utils.validation import dedupe_preserve_order, is_valid_asn, is_valid_domain, is_valid_ip
@@ -24,6 +25,67 @@ from tripper_recon.providers.cloudflare_rest import bgp_incidents
 
 
 log = logger("orchestrators")
+
+
+def _error_payload(err: Exception) -> Dict[str, Any]:
+    if isinstance(err, httpx.HTTPStatusError):
+        resp = err.response
+        req = getattr(resp, "request", None)
+        return {
+            "ok": False,
+            "error": "http_error",
+            "status_code": resp.status_code if resp else None,
+            "reason": resp.reason_phrase if resp else None,
+            "url": str(req.url) if req else None,
+            "message": str(err),
+        }
+    if isinstance(err, httpx.RequestError):
+        req = getattr(err, "request", None)
+        return {
+            "ok": False,
+            "error": "network_error",
+            "url": str(req.url) if req else None,
+            "message": str(err),
+        }
+    return {"ok": False, "error": type(err).__name__, "message": str(err)}
+
+
+def _error_details(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in payload.items() if k != "ok" and v is not None}
+
+
+def _error_summary(provider: str, payload: Dict[str, Any]) -> str:
+    details = _error_details(payload)
+    parts: List[str] = [provider]
+    status = details.get("status_code")
+    if status is None:
+        status = details.get("status")
+    if status is not None:
+        parts.append(str(status))
+    reason = details.get("reason")
+    if reason:
+        parts.append(str(reason))
+    message = details.get("message")
+    if message and str(message) not in parts:
+        parts.append(str(message))
+    return " | ".join(parts)
+
+
+def _should_suppress(provider: str, payload: Dict[str, Any]) -> bool:
+    if not payload or payload.get("ok"):
+        return False
+    err = payload.get("error")
+    status = payload.get("status") or payload.get("status_code")
+    if err in {"missing_api_key", "missing_api_token", "missing_token", "API key not configured"}:
+        return True
+    if provider == "ipinfo_asn" and err in {"unauthorized", "http_error"} and status in {401, 403}:
+        return True
+    if provider.startswith("cloudflare"):
+        if err in {"missing_api_token"}:
+            return True
+        if err == "http_error" and status == 400:
+            return True
+    return False
 
 
 def _env_keys() -> ApiKeys:
@@ -69,23 +131,23 @@ async def investigate_ip(ip: str) -> InvestigationResult:
         try:
             vt = await vt_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            vt = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            vt = _error_payload(e)
         try:
             ipi = await ipi_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            ipi = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            ipi = _error_payload(e)
         try:
             sh = await sh_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            sh = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            sh = _error_payload(e)
         try:
             ab = await ab_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            ab = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            ab = _error_payload(e)
         try:
             otx = await otx_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            otx = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            otx = _error_payload(e)
 
         asn_meta: Dict[str, Any] = {}
         if ipi.get("ok") and ipi["data"].get("asn"):
@@ -93,6 +155,25 @@ async def investigate_ip(ip: str) -> InvestigationResult:
             cf = await fetch_asn_metadata(client=client, api_token=keys.cloudflare_api_token, asn=asn)
             if cf.get("ok"):
                 asn_meta = cf["data"]
+
+        providers = {
+            "virustotal": vt,
+            "ipinfo": ipi,
+            "shodan": sh,
+            "abuseipdb": ab,
+            "otx": otx,
+        }
+        provider_errors: Dict[str, Dict[str, Any]] = {}
+        result_errors: List[str] = []
+        for name, payload in providers.items():
+            if not payload or payload.get("ok"):
+                continue
+            if _should_suppress(name, payload):
+                continue
+            details = _error_details(payload)
+            if details:
+                provider_errors[name] = details
+            result_errors.append(_error_summary(name, payload))
 
         data: Dict[str, Any] = {
             "ipinfo": ipi.get("data", {}) if ipi.get("ok") else {},
@@ -102,36 +183,109 @@ async def investigate_ip(ip: str) -> InvestigationResult:
             "otx": otx.get("data", {}) if otx.get("ok") else {},
             "asn_meta": asn_meta,
         }
+        if provider_errors:
+            data["errors"] = provider_errors
 
-        return InvestigationResult(ok=True, data=data)
+        return InvestigationResult(ok=True, data=data, errors=result_errors)
 
 
 async def investigate_domain(domain: str) -> InvestigationResult:
     if not is_valid_domain(domain):
         return InvestigationResult(ok=False, errors=["Invalid domain"], data={})
-    ips = await resolve_domain(domain)
-    ips = dedupe_preserve_order(ips)
+    ips: List[str] = []
     keys = _env_keys()
+    result_errors: List[str] = []
+    domain_error_msgs: List[str] = []
+    domain_intel: Dict[str, Any] = {}
+    domain_errors: Dict[str, Dict[str, Any]] = {}
     out: List[Dict[str, Any]] = []
     async with create_client() as client:
+        vt_domain_task = asyncio.create_task(vt_domain_summary(client=client, api_key=keys.vt_api_key, domain=domain)) if keys.vt_api_key else None
+        otx_domain_task = asyncio.create_task(otx_domain_pulses(client=client, api_key=keys.otx_api_key, domain=domain)) if keys.otx_api_key else None
+
+        vt_domain = None
+        if vt_domain_task:
+            try:
+                vt_domain = await vt_domain_task
+            except Exception as e:  # noqa: BLE001
+                vt_domain = _error_payload(e)
+
+        otx_domain = None
+        if otx_domain_task:
+            try:
+                otx_domain = await otx_domain_task
+            except Exception as e:  # noqa: BLE001
+                otx_domain = _error_payload(e)
+
+        passive_ips: List[str] = []
+
+        if vt_domain:
+            if vt_domain.get("ok"):
+                vt_data = vt_domain.get("data", {}) or {}
+                domain_intel["virustotal"] = vt_data
+                dns_records = vt_data.get("vt_dns_records") or []
+                for record in dns_records:
+                    if not isinstance(record, dict):
+                        continue
+                    if record.get("type") not in {"A", "AAAA"}:
+                        continue
+                    value = record.get("value")
+                    if value:
+                        passive_ips.append(str(value))
+            elif not _should_suppress("virustotal_domain", vt_domain):
+                domain_errors["virustotal"] = _error_details(vt_domain)
+                domain_error_msgs.append(_error_summary("virustotal_domain", vt_domain))
+
+        if otx_domain:
+            if otx_domain.get("ok"):
+                domain_intel["otx"] = otx_domain.get("data", {}) or {}
+            elif not _should_suppress("otx_domain", otx_domain):
+                domain_errors["otx"] = _error_details(otx_domain)
+                domain_error_msgs.append(_error_summary("otx_domain", otx_domain))
+
+        if passive_ips:
+            ips = dedupe_preserve_order(passive_ips)
+
         for ip in ips:
-            ptr = await reverse_ptr(ip)
+            ptr = None
             try:
                 vt = await vt_ip_summary(client=client, api_key=keys.vt_api_key, ip=ip)
             except Exception as e:  # noqa: BLE001
-                vt = {"ok": False, "error": type(e).__name__, "message": str(e)}
+                vt = _error_payload(e)
             try:
                 sh = await shodan_host(client=client, api_key=keys.shodan_api_key, ip=ip)
             except Exception as e:  # noqa: BLE001
-                sh = {"ok": False, "error": type(e).__name__, "message": str(e)}
+                sh = _error_payload(e)
             try:
                 ipi = await ipinfo_ip(client=client, token=keys.ipinfo_token, ip=ip)
             except Exception as e:  # noqa: BLE001
-                ipi = {"ok": False, "error": type(e).__name__, "message": str(e)}
+                ipi = _error_payload(e)
             try:
                 ab = await abuseipdb_check(client=client, api_key=keys.abuseipdb_api_key, ip=ip)
             except Exception as e:  # noqa: BLE001
-                ab = {"ok": False, "error": type(e).__name__, "message": str(e)}
+                ab = _error_payload(e)
+            try:
+                otx_ip = await otx_ip_pulses(client=client, api_key=keys.otx_api_key, ip=ip)
+            except Exception as e:  # noqa: BLE001
+                otx_ip = _error_payload(e)
+
+            providers = {
+                "virustotal": vt,
+                "shodan": sh,
+                "ipinfo": ipi,
+                "abuseipdb": ab,
+                "otx": otx_ip,
+            }
+            provider_errors: Dict[str, Dict[str, Any]] = {}
+            for name, payload in providers.items():
+                if not payload or payload.get("ok"):
+                    continue
+                if _should_suppress(name, payload):
+                    continue
+                details = _error_details(payload)
+                if details:
+                    provider_errors[name] = details
+                result_errors.append(f"{ip} :: {_error_summary(name, payload)}")
 
             asn_meta: Dict[str, Any] = {}
             if ipi.get("ok") and ipi["data"].get("asn"):
@@ -150,19 +304,29 @@ async def investigate_domain(domain: str) -> InvestigationResult:
                             "ixps": bv.get("ixps", []),
                         }
 
-            out.append(
-                {
-                    "ip": ip,
-                    "ptr": ptr,
-                    "virustotal": vt.get("data", {}) if vt.get("ok") else {},
-                    "shodan": sh.get("data", {}) if sh.get("ok") else {},
-                    "ipinfo": ipi.get("data", {}) if ipi.get("ok") else {},
-                    "abuseipdb": ab.get("data", {}) if ab.get("ok") else {},
-                    "asn_meta": asn_meta,
-                }
-            )
+            entry = {
+                "ip": ip,
+                "ptr": ptr,
+                "virustotal": vt.get("data", {}) if vt.get("ok") else {},
+                "shodan": sh.get("data", {}) if sh.get("ok") else {},
+                "ipinfo": ipi.get("data", {}) if ipi.get("ok") else {},
+                "abuseipdb": ab.get("data", {}) if ab.get("ok") else {},
+                "otx": otx_ip.get("data", {}) if otx_ip.get("ok") else {},
+                "asn_meta": asn_meta,
+            }
+            if provider_errors:
+                entry["errors"] = provider_errors
+            out.append(entry)
 
-    return InvestigationResult(ok=True, data={"domain": domain, "ips": out})
+    result_errors.extend(domain_error_msgs)
+
+    data: Dict[str, Any] = {"domain": domain, "ips": out}
+    if domain_intel:
+        data["domain_intel"] = domain_intel
+    if domain_errors:
+        data["domain_errors"] = domain_errors
+
+    return InvestigationResult(ok=True, data=data, errors=result_errors)
 
 
 async def investigate_asn(asn: int | str, *, resolve_neighbors: int = 0, enrich: bool = False, enrich_limit: int = 50) -> InvestigationResult:
@@ -178,7 +342,10 @@ async def investigate_asn(asn: int | str, *, resolve_neighbors: int = 0, enrich:
         ripe_abuse_task = asyncio.create_task(abuse_contact(client=client, asn=asn_int))
         caida_task = asyncio.create_task(caida_asrank(client=client, asn=asn_int))
         pdb_task = asyncio.create_task(peeringdb_ixps_for_asn(client=client, asn=asn_int))
-        cf_bgp_task = asyncio.create_task(bgp_incidents(client=client, api_token=keys.cloudflare_api_token, asn=asn_int))
+
+        cf_bgp_task = None
+        if keys.cloudflare_api_token:
+            cf_bgp_task = asyncio.create_task(bgp_incidents(client=client, api_token=keys.cloudflare_api_token, asn=asn_int))
 
         cf_task = None
         if keys.cloudflare_api_token:
@@ -187,31 +354,34 @@ async def investigate_asn(asn: int | str, *, resolve_neighbors: int = 0, enrich:
         try:
             ipi = await ipi_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            ipi = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            ipi = _error_payload(e)
         try:
             bgp = await bgp_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            bgp = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            bgp = _error_payload(e)
         try:
             ripe = await ripe_overview_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            ripe = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            ripe = _error_payload(e)
         try:
             rp_abuse = await ripe_abuse_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            rp_abuse = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            rp_abuse = _error_payload(e)
         try:
             caida = await caida_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            caida = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            caida = _error_payload(e)
         try:
             pdb = await pdb_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            pdb = {"ok": False, "error": type(e).__name__, "message": str(e)}
-        try:
-            cf_bgp = await cf_bgp_task  # type: ignore[assignment]
-        except Exception as e:  # noqa: BLE001
-            cf_bgp = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            pdb = _error_payload(e)
+        if cf_bgp_task:
+            try:
+                cf_bgp = await cf_bgp_task  # type: ignore[assignment]
+            except Exception as e:  # noqa: BLE001
+                cf_bgp = _error_payload(e)
+        else:
+            cf_bgp = {"ok": False, "error": "missing_api_token"}
 
         rs_task = asyncio.create_task(routing_status(client=client, asn=asn_int))
         nb_task = asyncio.create_task(asn_neighbours(client=client, asn=asn_int))
@@ -219,22 +389,49 @@ async def investigate_asn(asn: int | str, *, resolve_neighbors: int = 0, enrich:
         try:
             rs = await rs_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            rs = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            rs = _error_payload(e)
         try:
             nb = await nb_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            nb = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            nb = _error_payload(e)
         try:
             ap = await ap_task  # type: ignore[assignment]
         except Exception as e:  # noqa: BLE001
-            ap = {"ok": False, "error": type(e).__name__, "message": str(e)}
+            ap = _error_payload(e)
         if cf_task:
             try:
                 cf = await cf_task  # type: ignore[assignment]
             except Exception as e:  # noqa: BLE001
-                cf = {"ok": False, "error": type(e).__name__, "message": str(e)}
+                cf = _error_payload(e)
         else:
             cf = {"ok": False}
+
+        providers = {
+            "ipinfo_asn": ipi,
+            "bgpview": bgp,
+            "ripe_overview": ripe,
+            "ripe_abuse": rp_abuse,
+            "caida": caida,
+            "peeringdb": pdb,
+            "ripe_routing_status": rs,
+            "ripe_neighbors": nb,
+            "ripe_prefixes": ap,
+        }
+        if cf_bgp_task:
+            providers["cloudflare_bgp"] = cf_bgp
+        if cf_task:
+            providers["cloudflare_asn"] = cf
+        provider_errors: Dict[str, Dict[str, Any]] = {}
+        result_errors: List[str] = []
+        for name, payload in providers.items():
+            if not payload or payload.get("ok"):
+                continue
+            if _should_suppress(name, payload):
+                continue
+            details = _error_details(payload)
+            if details:
+                provider_errors[name] = details
+            result_errors.append(_error_summary(name, payload))
 
         meta: Dict[str, Any] = {}
         # Prefer Cloudflare values when present; fall back to IPinfo
@@ -357,9 +554,10 @@ async def investigate_asn(asn: int | str, *, resolve_neighbors: int = 0, enrich:
                 meta_bgp.update({"inetnums": inetnums})
 
         warnings: list[str] = []
-        if not cf.get("ok"):
+        ipinfo_suppressed = _should_suppress("ipinfo_asn", ipi)
+        if keys.cloudflare_api_token and not cf.get("ok"):
             warnings.append("cloudflare_query_failed_or_missing")
-        if not ipi.get("ok"):
+        if not ipi.get("ok") and not ipinfo_suppressed:
             warnings.append("ipinfo_query_failed_or_missing")
         if not bgp.get("ok"):
             warnings.append("bgpview_query_failed")
@@ -372,5 +570,9 @@ async def investigate_asn(asn: int | str, *, resolve_neighbors: int = 0, enrich:
         if not pdb.get("ok"):
             warnings.append("peeringdb_failed")
 
-        return InvestigationResult(ok=True, data={"asn": asn_int, "meta": meta, "bgp": meta_bgp}, warnings=warnings)
+        data: Dict[str, Any] = {"asn": asn_int, "meta": meta, "bgp": meta_bgp}
+        if provider_errors:
+            data["errors"] = provider_errors
+
+        return InvestigationResult(ok=True, data=data, warnings=warnings, errors=result_errors)
 

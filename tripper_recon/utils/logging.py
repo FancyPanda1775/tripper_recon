@@ -27,7 +27,7 @@ def _parse_context(**ctx: Any) -> Dict[str, Any]:
 
 
 def logger(module: str) -> Any:
-    min_level = int(os.getenv("NETINTEL_LOG_LEVEL", "20"))
+    min_level = int(os.getenv("TRIPPER_RECON_LOG_LEVEL", "20"))
 
     def _log(level: int, message: str, **ctx: Any) -> None:
         if level < min_level:

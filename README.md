@@ -122,7 +122,8 @@ Fonts
 
 - The CLI and API auto-load a `.env` file when present; see [`tripper_recon/utils/env.py`](./tripper_recon/utils/env.py).
 - Example configuration: [`.env.example`](./.env.example)
-- Supported keys: `CLOUDFLARE_API_TOKEN`, `VT_API_KEY`, `SHODAN_API_KEY`, `ABUSEIPDB_API_KEY`, `IPINFO_TOKEN`, `OTX_API_KEY`, `NETINTEL_LOG_LEVEL`, `NETINTEL_UA`.
+- Supported keys: `CLOUDFLARE_API_TOKEN`, `VT_API_KEY`, `SHODAN_API_KEY`, `ABUSEIPDB_API_KEY`, `IPINFO_TOKEN`, `OTX_API_KEY`, `TRIPPER_RECON_LOG_LEVEL`, `TRIPPER_RECON_USER_AGENT`.
+- Outbound HTTP requests default to a modern Chromium User-Agent and can be overridden via `TRIPPER_RECON_USER_AGENT`; all provider calls use HTTPS endpoints (port 443).
 
 
 
